@@ -85,17 +85,29 @@ function createApp(config = {}, store = new MemoryStore()) {
     app.get('/', (req, res) => {
       const { oidc, generators } = app.locals;
       const verifier = generators.codeVerifier();
+      // Okta requires state, and nonce is checked against the ID token.
       req.session.verifier = verifier;
+      req.session.state = generators.state();
+      req.session.nonce = generators.nonce();
       res.redirect(oidc.authorizationUrl({
         scope: 'openid profile email',
+        state: req.session.state,
+        nonce: req.session.nonce,
         code_challenge: generators.codeChallenge(verifier), code_challenge_method: 'S256',
       }));
     });
     app.get('/callback', async (req, res, next) => {
       try {
         const { oidc } = app.locals;
-        const tokens = await oidc.callback(`${cfg.baseUrl}/callback`, oidc.callbackParams(req),
-          { code_verifier: req.session.verifier });
+        const checks = {
+          state: req.session.state,
+          nonce: req.session.nonce,
+          code_verifier: req.session.verifier,
+        };
+        // One-time values: clear them so a replayed callback cannot reuse them.
+        delete req.session.state; delete req.session.nonce; delete req.session.verifier;
+        if (!checks.state || !checks.code_verifier) return res.redirect('/');
+        const tokens = await oidc.callback(`${cfg.baseUrl}/callback`, oidc.callbackParams(req), checks);
         await completeLogin(req, res, tokens.claims().email);
       } catch (err) { next(err); }
     });
