@@ -11,6 +11,7 @@ const express = require('express');
 const session = require('express-session');
 const crypto = require('crypto');
 const { MemoryStore, PgStore, nextStep, TERMS_VERSION, MAX_REMINDERS } = require('./db');
+const { renderPage, esc } = require('./ui');
 
 const STEP_PATH = { terms: '/terms', info: '/verify/info', ids: '/verify/ids', pay: '/pay' };
 
@@ -31,13 +32,8 @@ function createApp(config = {}, store = new MemoryStore()) {
     cookie: { httpOnly: true, sameSite: 'lax' },
   }));
 
-  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
-  const page = (title, body) => `<!doctype html><meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>${esc(title)}</title>
-    <body style="font-family:sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem">${body}</body>`;
+  // page(title, body, opts): wraps content in the shared layout.
+  const page = (title, body, opts = {}) => renderPage({ title, body, ...opts });
 
   async function log(email, decision, step) {
     await store.addCheck(email, decision, step);
@@ -112,10 +108,12 @@ function createApp(config = {}, store = new MemoryStore()) {
       } catch (err) { next(err); }
     });
   } else if (cfg.mode === 'dev') {
-    app.get('/', (req, res) => res.send(page('Sign in', `<h2>Workvivo Launcher (dev)</h2>
+    app.get('/', (req, res) => res.send(page('Sign in', `<h1>Sign in (dev)</h1>
+      <p class="muted">Local testing only. Enter any email to start the gate.</p>
       <form method="post" action="/dev/login">
-        <label>Email <input name="email" value="agent@primerica.test" required></label>
-        <button>Sign in</button></form>`)));
+        <label class="field">Email</label>
+        <input type="email" name="email" value="agent@primerica.test" required>
+        <div class="actions"><button class="btn primary">Continue</button></div></form>`)));
     app.post('/dev/login', async (req, res, next) => {
       try {
         const email = String(req.body.email || '').trim();
@@ -125,8 +123,9 @@ function createApp(config = {}, store = new MemoryStore()) {
     });
   } else {
     // Locked: no sign-in path exists, so no one gets into the gate.
-    app.get('/', (req, res) => res.status(503).send(page('Not available',
-      '<h2>Sign-in is not configured yet.</h2><p>Contact the project team.</p>')));
+    app.get('/', (req, res) => res.status(503).send(page('Not available', `
+      <div class="center"><h1>Sign-in is not available yet</h1>
+      <p class="muted">Primerica Online access is being set up. Please contact the project team.</p></div>`)));
   }
 
   // ---- The gate ------------------------------------------------------------
@@ -134,17 +133,25 @@ function createApp(config = {}, store = new MemoryStore()) {
 
   // ---- Step 1: service agreement -------------------------------------------
   app.get('/terms', requireUser(async (req, res) => {
-    res.send(page('Agreement', `<h2>Primerica Online Subscription Agreement</h2>
-      <p>Revised September 2025 (version ${esc(TERMS_VERSION)}).</p>
-      <p>Placeholder: insert the agreement text here. Legal must approve the final copy.</p>
-      <form method="post" action="/terms">
-        <button name="answer" value="agree">I Agree</button>
-        <button name="answer" value="decline">I do not Agree</button>
-      </form>`));
+    res.send(page('Agreement', `<h1>Subscription agreement</h1>
+      <p class="muted">Primerica Online Subscription Agreement &middot; Revised September 2025</p>
+      <div class="terms">
+        <p><strong>Placeholder text.</strong> The full agreement is inserted here by Legal.</p>
+        <p>By selecting "I agree" you confirm that you and your authorized users are in compliance with
+        Primerica's privacy and information security policies.</p>
+        <p>Your subscription, billing date and service level are described on the Primerica Online
+        home page.</p>
+      </div>
+      <form method="post" action="/terms" class="actions">
+        <button name="answer" value="decline" class="btn ghost">I do not agree</button>
+        <button name="answer" value="agree" class="btn primary">I agree and continue</button>
+      </form>`, { step: 1, email: req.session.user }));
   }));
   app.post('/terms', requireUser(async (req, res) => {
     if (req.body.answer !== 'agree') {
-      return res.send(page('Agreement', '<h2>You must agree to use Primerica Online.</h2>'));
+      return res.send(page('Agreement', `<div class="center"><h1>Agreement required</h1>
+        <p class="muted">You must agree to the subscription agreement to use Primerica Online.</p>
+        <p><a href="/terms">Review the agreement again</a></p></div>`, { step: 1, email: req.session.user }));
     }
     await store.updateUser(req.session.user, { terms_version: TERMS_VERSION, terms_accepted_at: new Date() });
     res.redirect('/gate');
@@ -152,10 +159,19 @@ function createApp(config = {}, store = new MemoryStore()) {
 
   // ---- Step 2: personal info (90-day verification) -------------------------
   app.get('/verify/info', requireUser(async (req, res) => {
-    res.send(page('Verify personal information', `<h2>Verify your personal information</h2>
-      <p>Every 90 days we ask you to confirm your information is still valid.</p>
-      <p>Placeholder: email, cell phone and veteran fields go here.</p>
-      <form method="post" action="/verify/info"><button>Submit</button></form>`));
+    res.send(page('Personal information', `<h1>Verify your personal information</h1>
+      <p class="muted">Please confirm your details. We ask you to do this every 90 days.</p>
+      <label class="field">Non-Primerica email address</label>
+      <input type="email" value="sample.agent@example.com" readonly>
+      <label class="field">Cell phone number</label>
+      <input type="tel" value="(555) 010-0000" readonly>
+      <label class="field">Are you a veteran or currently serving in the military?</label>
+      <div class="radio"><label><input type="radio" name="vet" checked> No</label>
+        <label><input type="radio" name="vet"> Yes</label></div>
+      <div class="notice">Demo fields. Values shown here are placeholders and are not saved.</div>
+      <form method="post" action="/verify/info" class="actions">
+        <button class="btn primary">Confirm and continue</button>
+      </form>`, { step: 2, email: req.session.user }));
   }));
   app.post('/verify/info', requireUser(async (req, res) => {
     await store.updateUser(req.session.user, { info_verified_at: new Date() });
@@ -168,13 +184,21 @@ function createApp(config = {}, store = new MemoryStore()) {
     const left = Math.max(0, MAX_REMINDERS - (u.ids_remind_count || 0));
     const remind = left > 0
       ? `<form method="post" action="/verify/ids/remind" style="display:inline">
-           <button>Remind me later (${left} left)</button></form>`
-      : '<p>You have used all reminders. Verification is now required.</p>';
-    res.send(page('Verify user IDs', `<h2>Verify user IDs</h2>
-      <p>The account owner must verify office user IDs every 90 days.</p>
-      <p>Placeholder: the user ID table goes here.</p>
-      <form method="post" action="/verify/ids" style="display:inline"><button>OK</button></form>
-      ${remind}`));
+           <button class="btn ghost">Remind me later (${left} left)</button></form>`
+      : `<span class="muted">No reminders left. Verification is required.</span>`;
+    res.send(page('Office user IDs', `<h1>Verify office user IDs</h1>
+      <p class="muted">The account owner confirms each office user ID and role every 90 days.</p>
+      <table>
+        <tr><th>User ID</th><th>Role</th><th>Access</th></tr>
+        <tr><td>Sample 0000001</td><td>Office manager</td><td>Full</td></tr>
+        <tr><td>Sample 0000002</td><td>Office staff</td><td>None</td></tr>
+      </table>
+      <div class="notice">Demo rows. Nothing here is read from or written to a real account.</div>
+      <div class="actions">
+        ${remind}
+        <form method="post" action="/verify/ids" style="display:inline">
+          <button class="btn primary">Verify and continue</button></form>
+      </div>`, { step: 3, email: req.session.user }));
   }));
   app.post('/verify/ids', requireUser(async (req, res) => {
     await store.updateUser(req.session.user, { ids_verified_at: new Date(), ids_remind_count: 0 });
@@ -190,9 +214,14 @@ function createApp(config = {}, store = new MemoryStore()) {
 
   // ---- Step 4: bill payment ------------------------------------------------
   app.get('/pay', requireUser(async (req, res) => {
-    res.send(page('Payment due', `<h2>Account action required</h2>
-      <p>Your subscription payment is outstanding.</p>
-      <form method="post" action="/pay"><button>Pay now (demo)</button></form>`));
+    res.send(page('Payment', `<h1>Subscription payment</h1>
+      <p class="muted">Your payment for the current billing period is outstanding.</p>
+      <div class="amount">Amount due</div>
+      <p class="muted">Current billing period</p>
+      <div class="notice">Demo only. Pressing the button below does not charge anything.</div>
+      <form method="post" action="/pay" class="actions">
+        <button class="btn primary">Pay now (demo)</button>
+      </form>`, { step: 4, email: req.session.user }));
   }));
   app.post('/pay', requireUser(async (req, res) => {
     // Demo only. Production needs a real payment processor, not a button.
