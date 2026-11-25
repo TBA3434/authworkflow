@@ -4,6 +4,7 @@
 //
 // MODE=okta : real OIDC login against Okta (OKTA_ISSUER, CLIENT_ID, CLIENT_SECRET)
 // MODE=dev  : sign-in by typing an email. Adds /dev/* helpers. Never deploy with dev on.
+// MODE=locked (default if MODE is unset or unrecognized): no sign-in at all. Safe for public URLs.
 // DATABASE_URL set : Render Postgres. Unset : in-memory (tests and local runs).
 
 const express = require('express');
@@ -98,7 +99,7 @@ function createApp(config = {}, store = new MemoryStore()) {
         await completeLogin(req, res, tokens.claims().email);
       } catch (err) { next(err); }
     });
-  } else {
+  } else if (cfg.mode === 'dev') {
     app.get('/', (req, res) => res.send(page('Sign in', `<h2>Workvivo Launcher (dev)</h2>
       <form method="post" action="/dev/login">
         <label>Email <input name="email" value="agent@primerica.test" required></label>
@@ -110,6 +111,10 @@ function createApp(config = {}, store = new MemoryStore()) {
         await completeLogin(req, res, email);
       } catch (err) { next(err); }
     });
+  } else {
+    // Locked: no sign-in path exists, so no one gets into the gate.
+    app.get('/', (req, res) => res.status(503).send(page('Not available',
+      '<h2>Sign-in is not configured yet.</h2><p>Contact the project team.</p>')));
   }
 
   // ---- The gate ------------------------------------------------------------
@@ -245,7 +250,8 @@ module.exports = { createApp };
 
 if (require.main === module) {
   const env = process.env;
-  const mode = env.MODE === 'okta' ? 'okta' : 'dev';
+  // okta: real sign-in. dev: local testing only. Anything else (or unset): locked.
+  const mode = ['okta', 'dev'].includes(env.MODE) ? env.MODE : 'locked';
   const port = Number(env.PORT || 3000);
   const store = env.DATABASE_URL ? new PgStore(env.DATABASE_URL) : new MemoryStore();
   const { app, cfg } = createApp({

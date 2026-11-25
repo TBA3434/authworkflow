@@ -188,3 +188,18 @@ test('health check reports the store in use', async () => {
   const body = await (await fetch(`${base}/healthz`)).json();
   assert.deepEqual(body, { ok: true, mode: 'dev', db: 'memory' });
 });
+
+test('locked mode has no sign-in path and no dev helpers', async () => {
+  const { app } = createApp({ mode: 'locked' }, new MemoryStore());
+  const srv = await new Promise((r) => { const s = app.listen(0, () => r(s)); });
+  const url = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    assert.equal((await fetch(`${url}/`)).status, 503);
+    assert.equal((await fetch(`${url}/dev/login`, { method: 'POST' })).status, 404);
+    assert.equal((await fetch(`${url}/dev/seed`, { method: 'POST' })).status, 404);
+    assert.equal((await fetch(`${url}/dev/reset`, { method: 'POST' })).status, 404);
+    assert.equal((await fetch(`${url}/logs`)).status, 404);
+    const health = await (await fetch(`${url}/healthz`)).json();
+    assert.equal(health.mode, 'locked');
+  } finally { srv.close(); }
+});
